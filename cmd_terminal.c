@@ -106,7 +106,7 @@ int main()
     epoll_ctl(epfd, EPOLL_CTL_ADD, tfd, &event);
 
 
-    printf("Listening on UDP port %d and raw keypress (press 'q' to quit)...\n", PORT);
+    printf("Listening on UDP port %d and waiting for commands\n", PORT);
 
     while (1) {
         int n = epoll_wait(epfd, events, MAX_EVENTS, -1);

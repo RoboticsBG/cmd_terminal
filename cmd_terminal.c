@@ -58,10 +58,15 @@ int main()
         perror("socket failed");
         exit(EXIT_FAILURE);
     }
-
+	
+    // 2. Allow multiple listeners on the same port
+    int reuse = 1;
+    setsockopt(r_sockfd, SOL_SOCKET, SO_REUSEADDR, (char *)&reuse, sizeof(reuse));
+	
+    // 3. Set non-blocking
     set_nonblocking(r_sockfd);
 
-    // 2. Bind UDP socket
+    // 4. Bind UDP socket
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
     addr.sin_port = htons(PORT);
@@ -73,11 +78,22 @@ int main()
         exit(EXIT_FAILURE);
     }
 
+    // 5. Join multicast group
+    struct ip_mreq mreq;
+    mreq.imr_multiaddr.s_addr = inet_addr(MULTICAST_IP);
+    mreq.imr_interface.s_addr = htonl(INADDR_ANY);  // Use default interface
+
+    if (setsockopt(r_sockfd, IPPROTO_IP, IP_ADD_MEMBERSHIP, &mreq, sizeof(mreq)) < 0) {
+        perror("setsockopt IP_ADD_MEMBERSHIP failed");
+        close(r_sockfd);
+        exit(EXIT_FAILURE);
+    }
+
     ret = create_send_socket();
     if (ret < 0)
 	return -1;
 
-    // 3. Create epoll instance
+    // Create epoll instance
     epfd = epoll_create1(0);
     if (epfd < 0) {
         perror("epoll_create1 failed");
@@ -90,21 +106,22 @@ int main()
                 return -1;
     }
 
-    // 4. Add UDP socket to epoll
+    //  Add UDP socket to epoll
     event.events = EPOLLIN;
     event.data.fd = r_sockfd;
     epoll_ctl(epfd, EPOLL_CTL_ADD, r_sockfd, &event);
 
-    // 5. Add stdin to epoll
+    //  Add stdin to epoll
     event.events = EPOLLIN;
     event.data.fd = STDIN_FILENO;
     epoll_ctl(epfd, EPOLL_CTL_ADD, STDIN_FILENO, &event);
 
-    // 5. Add tfd to epoll
+    //  Add tfd to epoll
     event.events = EPOLLIN;
     event.data.fd = tfd;
     epoll_ctl(epfd, EPOLL_CTL_ADD, tfd, &event);
 
+   
 
     printf("Listening on UDP port %d and waiting for commands\n", PORT);
 

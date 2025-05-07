@@ -10,7 +10,7 @@
 #include <sys/epoll.h>
 #include <sys/timerfd.h>
 
-
+#define MULTICAST_IP "239.1.1.1"
 #define PORT 8080
 #define DEST_IP "10.10.50.142"     // Set this to the target machine's IP
 #define DEST_PORT 8081

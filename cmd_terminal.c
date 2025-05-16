@@ -155,7 +155,7 @@ int main()
             }
 
 	    else if (fd == tfd) {
-		read(tfd, &expirations, sizeof(expirations)); 
+		read(tfd, &expirations, sizeof(expirations));
                 if (rd_key == 1){
                     //printf("Key pressed: '%c'\n", c);
 		    send_cmd(c);

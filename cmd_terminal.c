@@ -5,24 +5,22 @@
 #include <fcntl.h>
 #include <errno.h>
 #include <termios.h>
+#include <signal.h>
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/epoll.h>
 #include <sys/timerfd.h>
 
-#define MULTICAST_IP "239.1.1.1"
-#define PORT 8080
-#define DEST_IP "10.10.50.142"     // Set this to the target machine's IP
-#define DEST_PORT 8081
+#define SERVER_PORT 9000
+#define SERVER_IP "10.10.50.142"     // Set this to the target machine's IP
 
 
 #define MAX_EVENTS 10
 #define BUFFER_SIZE 1024
 
 
-int s_sockfd, r_sockfd;
-struct sockaddr_in destaddr;
-struct sockaddr_in addr;
+int sockfd;
+struct sockaddr_in server_addr;
 
 struct termios orig_termios;
 
@@ -31,7 +29,14 @@ int create_timerfd(int interval_ms);
 int create_send_socket();
 void disable_raw_mode();
 void enable_raw_mode();
-int send_udp_data(char *pstr);
+int send_tcp_data(char *pstr);
+
+volatile sig_atomic_t stop_flag = 0;
+
+void handle_sigint(int sig) 
+{
+    stop_flag = 1;
+}
 
 
 int set_nonblocking(int fd) {
@@ -42,62 +47,49 @@ int set_nonblocking(int fd) {
 int main() 
 {
    
-    int r_sockfd, epfd, tfd;
+    int epfd, tfd;
     struct epoll_event event, events[MAX_EVENTS];
     char buffer[BUFFER_SIZE];
     char c = 0;
     int rd_key = 0, ret;
     uint64_t  expirations;
 
-    enable_raw_mode();
+    signal(SIGINT, handle_sigint);
+	enable_raw_mode();
     set_nonblocking(STDIN_FILENO);
 
-    // 1. Create UDP socket
-    r_sockfd = socket(AF_INET, SOCK_DGRAM, 0);
-    if (r_sockfd < 0) {
+    // 1. Create TCP socket
+    sockfd = socket(AF_INET, SOCK_STREAM, 0);
+    if (sockfd < 0) {
         perror("socket failed");
         exit(EXIT_FAILURE);
     }
-	
-    // 2. Allow multiple listeners on the same port
-    int reuse = 1;
-    setsockopt(r_sockfd, SOL_SOCKET, SO_REUSEADDR, (char *)&reuse, sizeof(reuse));
-	
-    // 3. Set non-blocking
-    set_nonblocking(r_sockfd);
 
-    // 4. Bind UDP socket
-    memset(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(PORT);
-    addr.sin_addr.s_addr = INADDR_ANY;
+	// 2. Connect to server
+    memset(&server_addr, 0, sizeof(server_addr));
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons(SERVER_PORT);
+    inet_pton(AF_INET, SERVER_IP, &server_addr.sin_addr);
 
-    if (bind(r_sockfd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        perror("bind failed");
-        close(r_sockfd);
-        exit(EXIT_FAILURE);
-    }
 
-    // 5. Join multicast group
-    struct ip_mreq mreq;
-    mreq.imr_multiaddr.s_addr = inet_addr(MULTICAST_IP);
-    mreq.imr_interface.s_addr = htonl(INADDR_ANY);  // Use default interface
+ 	if (connect(sockfd, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
+        	perror("connect");
+        	close(sockfd);
+        	return 1;
+    	}
 
-    if (setsockopt(r_sockfd, IPPROTO_IP, IP_ADD_MEMBERSHIP, &mreq, sizeof(mreq)) < 0) {
-        perror("setsockopt IP_ADD_MEMBERSHIP failed");
-        close(r_sockfd);
-        exit(EXIT_FAILURE);
-    }
+	printf("Connected to server %s:%d\n", SERVER_IP, SERVER_PORT);
 
-    ret = create_send_socket();
-    if (ret < 0)
-	return -1;
+	// 3. Set non-blocking I/O
+    set_nonblocking(sockfd);
+
+
 
     // Create epoll instance
     epfd = epoll_create1(0);
     if (epfd < 0) {
         perror("epoll_create1 failed");
-        close(r_sockfd);
+        close(sockfd);
         exit(EXIT_FAILURE);
     }
 
@@ -106,10 +98,10 @@ int main()
                 return -1;
     }
 
-    //  Add UDP socket to epoll
+    //  Add TCP socket to epoll
     event.events = EPOLLIN;
-    event.data.fd = r_sockfd;
-    epoll_ctl(epfd, EPOLL_CTL_ADD, r_sockfd, &event);
+    event.data.fd = sockfd;
+    epoll_ctl(epfd, EPOLL_CTL_ADD, sockfd, &event);
 
     //  Add stdin to epoll
     event.events = EPOLLIN;
@@ -121,11 +113,10 @@ int main()
     event.data.fd = tfd;
     epoll_ctl(epfd, EPOLL_CTL_ADD, tfd, &event);
 
-   
 
-    printf("Listening on UDP port %d and waiting for commands\n", PORT);
+    printf("Ready to sent on TCP port %d and waiting for commands\n", SERVER_PORT);
 
-    while (1) {
+    while (!stop_flag) {
         int n = epoll_wait(epfd, events, MAX_EVENTS, -1);
         if (n < 0) {
             perror("epoll_wait failed");
@@ -136,16 +127,19 @@ int main()
         for (int i = 0; i < n; i++) {
             int fd = events[i].data.fd;
 
-            if (fd == r_sockfd) {
-                struct sockaddr_in cliaddr;
-                socklen_t len = sizeof(cliaddr);
-                ssize_t recvd = recvfrom(r_sockfd, buffer, BUFFER_SIZE - 1, 0,
-                                         (struct sockaddr *)&cliaddr, &len);
-                if (recvd > 0) {
-                    buffer[recvd] = '\0';
+            if (fd == sockfd) {
+		int r = read(sockfd, buffer, BUFFER_SIZE - 1);
+                if (r > 0) {
+                    buffer[r] = '\0';
                     printf("\r%s",buffer);
 		    fflush(stdout);
 		 }
+		else{
+		    printf("Server disconnected.\n");
+                    stop_flag = 1;
+                    break;
+
+		}
             }
 
             else if (fd == STDIN_FILENO) {
@@ -175,7 +169,7 @@ int main()
 
 cleanup:
     close(epfd);
-    close(r_sockfd);
+    close(sockfd);
     close(tfd);
     return 0;
 }
@@ -186,20 +180,20 @@ void send_cmd(char c)
 
 	switch(c){
 	case 'i':
-		sprintf(str_cmd,"%s", "m1000");
-		send_udp_data(str_cmd);
+		sprintf(str_cmd,"%s", "m2000");
+		send_tcp_data(str_cmd);
 		break;
 	case 'm':
-		sprintf(str_cmd,"%s", "m-1000");
-		send_udp_data(str_cmd);
+		sprintf(str_cmd,"%s", "m-2000");
+		send_tcp_data(str_cmd);
 		break;
 	case 'j':
 		sprintf(str_cmd,"%s", "r1000");
-		send_udp_data(str_cmd);
+		send_tcp_data(str_cmd);
 		break;
 	case 'k':
 		sprintf(str_cmd,"%s", "r-1000");
-		send_udp_data(str_cmd);
+		send_tcp_data(str_cmd);
 		break;
 	}
 
@@ -233,37 +227,12 @@ int create_timerfd(int interval_ms)
         return tfd;
 }
 
-int create_send_socket()
+
+int send_tcp_data(char *pstr)
 {
 
-	// 1. Create socket
-    	if ((s_sockfd = socket(AF_INET, SOCK_DGRAM, 0)) < 0) {
-        	perror("Socket creation failed");
-        	return -1;
-    	}
-
-    	// 2. Set destination address
-    	memset(&destaddr, 0, sizeof(destaddr));
-    	destaddr.sin_family = AF_INET;
-    	destaddr.sin_port = htons(DEST_PORT);
-
-    	if (inet_pton(AF_INET, DEST_IP, &destaddr.sin_addr) <= 0) {
-        	perror("Invalid destination IP address");
-        	close(s_sockfd);
-        	return -2;
-    	}
-
-    	printf("Cmd sender ready\n");
-	return 0;
-}
-
-
-int send_udp_data(char *pstr)
-{
-
-        ssize_t sent = sendto(s_sockfd, pstr, strlen(pstr), 0,
-                              (struct sockaddr *)&destaddr, sizeof(destaddr));
-        if (sent < 0) {
+	ssize_t sent = send(sockfd, pstr, strlen(pstr), 0);
+	if (sent < 0) {
             perror("Cmd send failed");
             return -1;
         } else {

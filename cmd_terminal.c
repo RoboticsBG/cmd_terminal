@@ -11,8 +11,8 @@
 #include <sys/epoll.h>
 #include <sys/timerfd.h>
 
-#define SERVER_PORT 9000
-#define SERVER_IP "10.10.50.142"     // Set this to the target machine's IP
+#define SERVER_PORT 8082
+#define SERVER_IP "127.0.0.1"     // Set this to the target machine's IP
 
 
 #define MAX_EVENTS 10
@@ -180,11 +180,11 @@ void send_cmd(char c)
 
 	switch(c){
 	case 'i':
-		sprintf(str_cmd,"%s", "m2000");
+		sprintf(str_cmd,"%s", "m1000");
 		send_tcp_data(str_cmd);
 		break;
 	case 'm':
-		sprintf(str_cmd,"%s", "m-2000");
+		sprintf(str_cmd,"%s", "m-1000");
 		send_tcp_data(str_cmd);
 		break;
 	case 'j':
